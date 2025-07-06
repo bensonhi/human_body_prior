@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example script showing how to use Temporal VPoser with BEAT2 dataset
+Official Training Script for Temporal VPoser with BEAT2 dataset
 """
 
 import numpy as np
@@ -178,15 +178,21 @@ def temporal_vae_loss(recon_poses, target_poses, q_z, kl_weight=1.0):
 
 def train_temporal_vposer(model, train_loader, val_loader, num_epochs=10, lr=1e-3, kl_weight=1.0):
     """
-    Training loop for Temporal VPoser with validation
+    Training loop for Temporal VPoser with validation and memory management
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
     optimizer = Adam(model.parameters(), lr=lr)
-    scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
+    scheduler = StepLR(optimizer, step_size=50, gamma=0.8)  # Adjusted for 1000 epochs
     
     best_val_loss = float('inf')
+    patience = 50  # Early stopping patience
+    patience_counter = 0
+    
+    # Training history for monitoring
+    train_history = {'total_loss': [], 'recon_loss': [], 'kl_loss': []}
+    val_history = {'total_loss': [], 'recon_loss': [], 'kl_loss': []}
     
     for epoch in range(num_epochs):
         # Training phase
@@ -212,18 +218,33 @@ def train_temporal_vposer(model, train_loader, val_loader, num_epochs=10, lr=1e-
             
             # Backward pass
             loss_dict['total_loss'].backward()
+            
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
+            
+            # Clear cache to prevent memory buildup
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
             
             # Accumulate losses
             train_loss += loss_dict['total_loss'].item()
             train_recon_loss += loss_dict['recon_loss'].item()
             train_kl_loss += loss_dict['kl_loss'].item()
             
-            if batch_idx % 10 == 0:
-                print(f'Epoch {epoch}, Batch {batch_idx}: '
+            # More frequent logging for long training
+            if batch_idx % 50 == 0:
+                print(f'Epoch {epoch}, Batch {batch_idx}/{len(train_loader)}: '
                       f'Loss: {loss_dict["total_loss"].item():.6f}, '
                       f'Recon: {loss_dict["recon_loss"].item():.6f}, '
                       f'KL: {loss_dict["kl_loss"].item():.6f}')
+                
+                # Memory usage monitoring
+                if device.type == 'cuda':
+                    memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                    memory_reserved = torch.cuda.memory_reserved(device) / 1024**3
+                    print(f'    GPU Memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved')
         
         # Validation phase
         model.eval()
@@ -256,59 +277,103 @@ def train_temporal_vposer(model, train_loader, val_loader, num_epochs=10, lr=1e-
         val_recon_loss /= len(val_loader)
         val_kl_loss /= len(val_loader)
         
+        # Store history
+        train_history['total_loss'].append(train_loss)
+        train_history['recon_loss'].append(train_recon_loss)
+        train_history['kl_loss'].append(train_kl_loss)
+        
+        val_history['total_loss'].append(val_loss)
+        val_history['recon_loss'].append(val_recon_loss)
+        val_history['kl_loss'].append(val_kl_loss)
+        
         print(f'\nEpoch {epoch} Summary:')
         print(f'  Train - Total: {train_loss:.6f}, Recon: {train_recon_loss:.6f}, KL: {train_kl_loss:.6f}')
         print(f'  Val   - Total: {val_loss:.6f}, Recon: {val_recon_loss:.6f}, KL: {val_kl_loss:.6f}')
         
-        # Save best model
+        # Save best model and handle early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            patience_counter = 0  # Reset patience counter
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
+                'train_history': train_history,
+                'val_history': val_history,
             }, 'best_temporal_vposer.pth')
             print(f'  New best model saved! Val loss: {val_loss:.6f}')
+        else:
+            patience_counter += 1
+            print(f'  No improvement. Patience: {patience_counter}/{patience}')
+        
+        # Save checkpoint every 25 epochs (more frequent for 1000 epochs)
+        if (epoch + 1) % 25 == 0:
+            checkpoint_path = f'temporal_vposer_checkpoint_epoch_{epoch+1}.pth'
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_history': train_history,
+                'val_history': val_history,
+            }, checkpoint_path)
+            print(f'  Checkpoint saved: {checkpoint_path}')
+        
+        # Early stopping check
+        if patience_counter >= patience:
+            print(f"\nEarly stopping triggered after {epoch + 1} epochs")
+            print(f"Best validation loss: {best_val_loss:.6f}")
+            break
         
         scheduler.step()
         print(f'  Learning rate: {scheduler.get_last_lr()[0]:.6f}')
         print()
+        
+        # Clear cache after each epoch
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    # Save final training history
+    import json
+    with open('training_history.json', 'w') as f:
+        json.dump({'train': train_history, 'val': val_history}, f)
+    print("Training history saved to 'training_history.json'")
 
 
 def main():
-    """Main function demonstrating Temporal VPoser usage with BEAT2 dataset"""
+    """Main function for official Temporal VPoser training with BEAT2 dataset"""
     
-    # Configuration
+    # Enhanced configuration for official training
     config = create_temporal_vposer_config(
-        num_neurons=512,      # Hidden layer size
-        latentD=32,           # Latent space dimension
-        d_model=256,          # Transformer hidden dimension
-        num_layers=4,         # Number of transformer layers
-        num_heads=8,          # Number of attention heads
-        dim_feedforward=512,  # Transformer feedforward dimension
-        dropout=0.1,          # Dropout rate
-        kl_weight=1.0         # KL divergence weight
+        num_neurons=1024,     # Increased from 512
+        latentD=64,           # Increased from 32
+        d_model=512,          # Increased from 256
+        num_layers=6,         # Increased from 4
+        num_heads=16,         # Increased from 8
+        dim_feedforward=1024, # Increased from 512
+        dropout=0.1,          # Keep
+        kl_weight=1.0         # Keep
     )
     
     # Create model
     model = TemporalVPoser(config)
     print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
     
-    # Dataset configuration
+    # Dataset configuration for official training
     beat2_root = "BEAT2/beat_english_v2.0.0"
     sequence_length = 16
     stride = 8
-    batch_size = 8
+    batch_size = 16  # Increased from 8 (adjust based on GPU memory)
     
-    # Select specific speakers for faster training (optional)
-    # Use None to include all speakers
-    selected_speakers = ['miranda', 'sophie', 'carla']  # Start with a few speakers
-    max_files_per_speaker = 10  # Limit files per speaker for faster training
+    # Use ALL data for official training
+    selected_speakers = None  # Use all speakers instead of just 3
+    max_files_per_speaker = None  # Use all files instead of limiting to 10
     
     # Create datasets
-    print("Loading training dataset...")
+    print("Loading full training dataset...")
     train_dataset = BEAT2SequenceDataset(
         beat2_root=beat2_root,
         split_type='train',
@@ -318,7 +383,7 @@ def main():
         max_files_per_speaker=max_files_per_speaker
     )
     
-    print("\nLoading validation dataset...")
+    print("\nLoading full validation dataset...")
     val_dataset = BEAT2SequenceDataset(
         beat2_root=beat2_root,
         split_type='val',
@@ -328,9 +393,9 @@ def main():
         max_files_per_speaker=max_files_per_speaker
     )
     
-    # Create dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    # Create dataloaders with more workers for faster loading
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8)
     
     print(f"\nDataset sizes:")
     print(f"  Training: {len(train_dataset)} sequences")
@@ -339,26 +404,32 @@ def main():
     print(f"  Training batches: {len(train_loader)}")
     print(f"  Validation batches: {len(val_loader)}")
     
-    # Train model
-    print("\nStarting training...")
+    # Check GPU availability
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nUsing device: {device}")
+    if device.type == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    
+    # Official training with enhanced parameters
+    print("\nStarting official training...")
     train_temporal_vposer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        num_epochs=10,
-        lr=1e-3,
-        kl_weight=0.1  # Start with lower KL weight
+        num_epochs=1000,    # Extended for thorough training
+        lr=5e-4,            # Reduced from 1e-3 for stability
+        kl_weight=0.05      # Reduced from 0.1 for better initial reconstruction
     )
     
     # Test model capabilities
     print("\nTesting model capabilities...")
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)  # Ensure model is on correct device
+    model.to(device)
     model.eval()
     with torch.no_grad():
         # Get a sample batch
         sample_batch = next(iter(val_loader))
-        sample_poses = sample_batch['poses'].to(device)  # Move to device
+        sample_poses = sample_batch['poses'].to(device)
         sample_metadata = sample_batch['metadata']
         
         # 1. Test reconstruction
@@ -370,45 +441,96 @@ def main():
         print(f"Reconstruction error: {recon_error.item():.6f}")
         
         # 2. Test sequence generation
-        generated = model.sample_poses(num_poses=3, seq_len=20)
+        generated = model.sample_poses(num_poses=5, seq_len=32)
         print(f"Generated sequences: {generated['pose_body'].shape}")
         
         # 3. Test autoregressive generation
-        initial_poses = sample_poses[:2, :5, :]  # First 5 frames from 2 sequences
-        future_sequence = model.generate_sequence(initial_poses, future_len=10)
+        initial_poses = sample_poses[:2, :8, :]  # First 8 frames from 2 sequences
+        future_sequence = model.generate_sequence(initial_poses, future_len=16)
         print(f"Autoregressive generation - Initial: {initial_poses.shape}, Future: {future_sequence.shape}")
         
         # 4. Test with specific speakers
         print(f"\nSample metadata:")
         batch_size = len(sample_metadata['speaker'])
-        for i in range(min(3, batch_size)):
+        for i in range(min(5, batch_size)):
             print(f"  Sequence {i}: Speaker {sample_metadata['speaker'][i]}, File {sample_metadata['file_id'][i]}")
     
-    # Save final model
-    torch.save(model.state_dict(), 'temporal_vposer_beat2_final.pth')
-    print("\nFinal model saved to 'temporal_vposer_beat2_final.pth'")
+    # Save final model with timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    final_model_path = f'temporal_vposer_official_{timestamp}.pth'
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'config': config,
+        'training_info': {
+            'num_train_sequences': len(train_dataset),
+            'num_val_sequences': len(val_dataset),
+            'batch_size': batch_size,
+            'sequence_length': sequence_length,
+            'stride': stride,
+        }
+    }, final_model_path)
+    print(f"\nFinal model saved to '{final_model_path}'")
     
-    # Test with different speakers
-    print("\nTesting with different speakers...")
+    # Final evaluation on test set
+    print("\nFinal evaluation on test set...")
     test_dataset = BEAT2SequenceDataset(
         beat2_root=beat2_root,
         split_type='test',
         sequence_length=sequence_length,
         stride=stride,
-        speakers=['miranda'],  # Test with one speaker
-        max_files_per_speaker=2
+        speakers=None,  # Use all speakers
+        max_files_per_speaker=None  # Use all files
     )
     
     if len(test_dataset) > 0:
-        test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
-        test_batch = next(iter(test_loader))
-        test_poses = test_batch['poses'].to(device)  # Move to device
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8)
         
-        # Test generalization
+        total_test_loss = 0.0
+        total_recon_loss = 0.0
+        total_kl_loss = 0.0
+        num_batches = 0
+        
+        model.eval()
         with torch.no_grad():
-            test_results = model(test_poses)
-            test_recon_error = nn.MSELoss()(test_results['pose_body'], test_poses)
-            print(f"Test reconstruction error: {test_recon_error.item():.6f}")
+            for batch in test_loader:
+                test_poses = batch['poses'].to(device)
+                test_results = model(test_poses)
+                
+                # Calculate losses
+                loss_dict = temporal_vae_loss(
+                    test_results['pose_body'], 
+                    test_poses, 
+                    test_results['q_z'], 
+                    kl_weight=0.05
+                )
+                
+                total_test_loss += loss_dict['total_loss'].item()
+                total_recon_loss += loss_dict['recon_loss'].item()
+                total_kl_loss += loss_dict['kl_loss'].item()
+                num_batches += 1
+        
+        avg_test_loss = total_test_loss / num_batches
+        avg_recon_loss = total_recon_loss / num_batches
+        avg_kl_loss = total_kl_loss / num_batches
+        
+        print(f"\nFinal Test Results:")
+        print(f"  Test sequences: {len(test_dataset)}")
+        print(f"  Average total loss: {avg_test_loss:.6f}")
+        print(f"  Average reconstruction loss: {avg_recon_loss:.6f}")
+        print(f"  Average KL loss: {avg_kl_loss:.6f}")
+        
+        # Save test results
+        test_results_path = f'test_results_{timestamp}.txt'
+        with open(test_results_path, 'w') as f:
+            f.write(f"Temporal VPoser Test Results\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Test sequences: {len(test_dataset)}\n")
+            f.write(f"Average total loss: {avg_test_loss:.6f}\n")
+            f.write(f"Average reconstruction loss: {avg_recon_loss:.6f}\n")
+            f.write(f"Average KL loss: {avg_kl_loss:.6f}\n")
+        
+        print(f"Test results saved to '{test_results_path}'")
 
 
 if __name__ == "__main__":
