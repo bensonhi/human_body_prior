@@ -349,11 +349,13 @@ def main():
     
     # Test model capabilities
     print("\nTesting model capabilities...")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)  # Ensure model is on correct device
     model.eval()
     with torch.no_grad():
         # Get a sample batch
         sample_batch = next(iter(val_loader))
-        sample_poses = sample_batch['poses']
+        sample_poses = sample_batch['poses'].to(device)  # Move to device
         sample_metadata = sample_batch['metadata']
         
         # 1. Test reconstruction
@@ -396,7 +398,7 @@ def main():
     if len(test_dataset) > 0:
         test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
         test_batch = next(iter(test_loader))
-        test_poses = test_batch['poses']
+        test_poses = test_batch['poses'].to(device)  # Move to device
         
         # Test generalization
         with torch.no_grad():
