@@ -346,12 +346,12 @@ def train_temporal_vposer(model, train_loader, val_loader, num_epochs=10, lr=1e-
 def main():
     """Main function for official Temporal VPoser training with BEAT2 dataset"""
     
-    # Enhanced configuration for official training
+    # Enhanced configuration for official training with longer sequences
     config = create_temporal_vposer_config(
         num_neurons=1024,     # Increased from 512
         latentD=64,           # Increased from 32
         d_model=512,          # Increased from 256
-        num_layers=6,         # Increased from 4
+        num_layers=8,         # Increased from 6 for longer sequences
         num_heads=16,         # Increased from 8
         dim_feedforward=1024, # Increased from 512
         dropout=0.1,          # Keep
@@ -364,9 +364,9 @@ def main():
     
     # Dataset configuration for official training
     beat2_root = "BEAT2/beat_english_v2.0.0"
-    sequence_length = 16
-    stride = 8
-    batch_size = 16  # Increased from 8 (adjust based on GPU memory)
+    sequence_length = 150  # Increased for longer temporal modeling
+    stride = 25  # Adjusted stride for longer sequences
+    batch_size = 32  # Increased for A40 48GB VRAM
     
     # Use ALL data for official training
     selected_speakers = None  # Use all speakers instead of just 3
@@ -393,9 +393,9 @@ def main():
         max_files_per_speaker=max_files_per_speaker
     )
     
-    # Create dataloaders with more workers for faster loading
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8)
+    # Create dataloaders optimized for A40 GPU
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=12)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=12)
     
     print(f"\nDataset sizes:")
     print(f"  Training: {len(train_dataset)} sequences")
@@ -441,12 +441,12 @@ def main():
         print(f"Reconstruction error: {recon_error.item():.6f}")
         
         # 2. Test sequence generation
-        generated = model.sample_poses(num_poses=5, seq_len=32)
+        generated = model.sample_poses(num_poses=3, seq_len=150)
         print(f"Generated sequences: {generated['pose_body'].shape}")
         
         # 3. Test autoregressive generation
-        initial_poses = sample_poses[:2, :8, :]  # First 8 frames from 2 sequences
-        future_sequence = model.generate_sequence(initial_poses, future_len=16)
+        initial_poses = sample_poses[:2, :50, :]  # First 50 frames from 2 sequences
+        future_sequence = model.generate_sequence(initial_poses, future_len=100)
         print(f"Autoregressive generation - Initial: {initial_poses.shape}, Future: {future_sequence.shape}")
         
         # 4. Test with specific speakers
@@ -484,7 +484,7 @@ def main():
     )
     
     if len(test_dataset) > 0:
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=12)
         
         total_test_loss = 0.0
         total_recon_loss = 0.0
