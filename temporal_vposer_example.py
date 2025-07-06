@@ -6,14 +6,17 @@ Example script showing how to use Temporal VPoser with BEAT2 dataset
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim
+from torch.optim.adam import Adam
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 
 import pandas as pd
 
 import sys
+import os
 sys.path.append('src')
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from human_body_prior.models.temporal_vposer import TemporalVPoser, create_temporal_vposer_config
 
 
@@ -180,8 +183,8 @@ def train_temporal_vposer(model, train_loader, val_loader, num_epochs=10, lr=1e-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+    optimizer = Adam(model.parameters(), lr=lr)
+    scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
     
     best_val_loss = float('inf')
     
@@ -377,8 +380,9 @@ def main():
         
         # 4. Test with specific speakers
         print(f"\nSample metadata:")
-        for i, meta in enumerate(sample_metadata[:3]):
-            print(f"  Sequence {i}: Speaker {meta['speaker']}, File {meta['file_id']}")
+        batch_size = len(sample_metadata['speaker'])
+        for i in range(min(3, batch_size)):
+            print(f"  Sequence {i}: Speaker {sample_metadata['speaker'][i]}, File {sample_metadata['file_id'][i]}")
     
     # Save final model
     torch.save(model.state_dict(), 'temporal_vposer_beat2_final.pth')
